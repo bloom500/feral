@@ -26,6 +26,9 @@ rather you know that in the first thirty seconds than after writing a patch.
 
 ```bash
 # Prereqs: Rust stable, Node 20+, Bun 1.x
+# Tauri CLI is not bundled with Rust, install it once:
+cargo install tauri-cli --version "^2"
+
 cd frontend-react && npm install
 cd ../CinderpawAgent && bun install
 

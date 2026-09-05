@@ -155,13 +155,13 @@ forwarding to the sidecar.
 | Rust | stable (1.75+) | `rustc --version` |
 | Node | 20+ | `node --version` |
 | Bun | 1.x | `bun --version` |
-| Tauri CLI | 2.x | `cargo tauri --version` |
+| Tauri CLI | 2.x | `cargo tauri --version`, install with `cargo install tauri-cli --version "^2"` |
 | LLVM/Clang | any recent | `clang --version` — **Windows only, required for the `whisper` feature** (bindgen needs a native clang for MSVC-compatible bindings). Default install path is `C:\Program Files\LLVM\bin`; if yours differs, set `LIBCLANG_PATH` before building. |
 
 ### First run
 
 ```bash
-git clone <repo> && cd CinderpawLocalAI
+git clone https://github.com/bloom500/cinderpaw.git && cd cinderpaw
 cd frontend-react && npm install && cd ..
 cd CinderpawAgent && bun install && cd ..
 
