@@ -3,6 +3,11 @@
 Cinderpaw is licensed under BUSL-1.1 (see `LICENSE`). This file records third-party
 work Cinderpaw builds on, and the notices that work requires.
 
+It covers two things: designs we derived from, and source we copied into this
+tree. Package-manager dependencies are not listed here. Those ship with their
+own licenses and are resolved at install time; this file is for work that would
+otherwise look like ours.
+
 ---
 
 ## Prime Agent / pi — the notebook design
@@ -56,3 +61,22 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+---
+
+## OpenClaw - tool-call repair scanner
+
+**Copied verbatim into:** `CinderpawAgent/src/vendor/tool-call-repair/grammar.ts`,
+`CinderpawAgent/src/vendor/tool-call-repair/payload.ts`
+
+- **Source:** https://github.com/openclaw/openclaw
+  (`packages/tool-call-repair/src/`)
+- **License:** MIT, full text in
+  `CinderpawAgent/src/vendor/tool-call-repair/LICENSE`
+- **Copyright:** Copyright (c) 2026 OpenClaw Foundation
+- **Modifications:** one import specifier changed from `./grammar.js` to
+  `./grammar.ts` to match our module resolver. Otherwise verbatim.
+
+Used to recover tool calls emitted in formats other than the one we ask models
+for. See `CinderpawAgent/src/vendor/tool-call-repair/README.md` for what it
+covers, what it does not, and why the rest of that package was left behind.

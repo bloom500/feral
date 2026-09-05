@@ -4,7 +4,7 @@
  * The idea is Prime Intellect's RLM (Recursive Language Model): give the model
  * a long-lived interpreter instead of a one-tool-per-turn loop, so it can bind
  * results to variables, write helper functions, and compose tool calls as
- * program logic. See ../../THIRD-PARTY-NOTICES.md.
+ * program logic. See ../../../THIRD-PARTY-NOTICES.md.
  *
  * Their kernel is IPython because their stack is Python. Ours is JavaScript
  * because the sidecar already runs on Bun, so the interpreter is free and

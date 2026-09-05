@@ -2,7 +2,7 @@
  * The notebook doctrine — what the model is told about its interpreter.
  *
  * Ported from Prime Agent's `prompts/rlm.ts` (MIT, Copyright (c) 2025 Mario
- * Zechner; see ../../THIRD-PARTY-NOTICES.md). The *structure* of the doctrine is
+ * Zechner; see ../../../THIRD-PARTY-NOTICES.md). The *structure* of the doctrine is
  * theirs and it is the part worth keeping: state the interpreter is long-lived,
  * insist results get bound to variables, warn against treating the notebook as
  * the native environment of the thing under investigation, and spell out which
