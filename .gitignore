@@ -144,3 +144,17 @@ __pycache__/
 # Same for the TAC comparison homes: agent state from real runs, including a
 # SQLite database that holds whatever keys the run was given.
 .tac-home-*/
+
+# Session artefacts. These are how one working session hands off to the next:
+# checkpoints, per-slice receipts, dated plans and UI state snapshots. They are
+# written for whoever picks the work up tomorrow, they go stale within hours,
+# and a stranger cloning this repo reads them as current documentation. Kept on
+# disk, kept out of the repo. The durable docs (README, ARCHITECTURE, PROMISES,
+# SECURITY, the ADRs, docs/*.md guides) stay tracked.
+CHECKPOINT_*.md
+OPUS_*.md
+docs/receipts/*.md
+docs/superpowers/
+docs/review-prompts/
+docs/ui/2026-*.md
+docs/specs/2026-*.md
