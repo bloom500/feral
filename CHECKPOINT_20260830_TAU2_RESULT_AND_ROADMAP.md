@@ -11,6 +11,13 @@ Branch `fix/arc-run-survives-errors` · last commit `86ebd3d`
 
 ## 0. The number that stands
 
+> **RETRACTED 2026-09-02.** The number below is wrong and reversed. Both arms
+> ran through OpenRouter without a pinned endpoint, and unpinned routing has
+> since been measured to swing identical runs by tens of points. The pinned
+> rerun put Cinderpaw at **90.0% against the reference agent's 82.0%**, the
+> opposite ordering. Do not quote, publish, or reason from the figures in this
+> section. The rest of the checkpoint stands.
+
 **Cinderpaw 82.0% (41/50) against the reference `llm_agent` 86.0% (43/50)**,
 airline domain, `z-ai/glm-5.3-flash` on both arms, user simulator
 `gemini-2.5-flash`, `--max-steps 200`, concurrency 1. Both arms on this harness

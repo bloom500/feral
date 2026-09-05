@@ -721,9 +721,12 @@ on a model. Do them after the P0/P1 fixes above.
 
 **Do not touch `db_match`, and do not try to raise the tau2 score.** The
 2026-08-30 result was Cinderpaw 82.0% (41/50) against the reference agent's
-86.0% (43/50) on the same harness, and the entire gap is `db_match` — passenger
-ordering (tasks 8, 40), wrong `payment_id` (18), searched but never acted (15,
-44), malformed arguments (32, 33). Those causes are **read from 50 known
+86.0% (43/50) on the same harness (**those two figures were retracted on
+2026-09-02: the run was unpinned, and the pinned rerun reversed them to 90.0%
+against 82.0%. The prohibition below does not depend on them**), and the
+entire gap is `db_match` — passenger ordering (tasks 8, 40), wrong
+`payment_id` (18), searched but never acted (15, 44), malformed arguments
+(32, 33). Those causes are **read from 50 known
 trajectories**. Fixing them is fitting to a public test set, it is explicitly
 forbidden, and it would make the number worthless. If you find yourself editing
 agent behaviour because of a named task id, stop.
