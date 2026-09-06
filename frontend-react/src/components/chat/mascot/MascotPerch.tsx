@@ -227,7 +227,14 @@ function MascotPerchInner({ baseState }: { baseState: MascotState }) {
       ))}
       <div
         ref={wrapRef}
-        className="pointer-events-none absolute -top-[43px] left-5 z-10"
+        // 54px, not 43. The wrapper is SPRITE_H(18) x SCALE(3) tall, and the
+        // frame is drawn inside it at `(1 + bob) * 3` from the top, so the
+        // creature's feet land between y=48 and y=54 depending on where the
+        // bob is. At -43 the bottom 8 to 11 pixels of every frame were behind
+        // the composer: the legs were simply cut off, and a mascot meant to
+        // perch on the rim looked like it was standing behind it. At -54 the
+        // lowest bob rests exactly on the edge and nothing is ever clipped.
+        className="pointer-events-none absolute -top-[54px] left-5 z-10"
         style={{
           transform: `translateX(${x}px)`,
           transition: traveling ? `transform ${LEG_MS}ms linear` : 'none',
