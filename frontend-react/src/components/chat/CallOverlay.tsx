@@ -362,7 +362,10 @@ export function CallOverlay({
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
-      if (document.querySelector('[role="dialog"]')) return;
+      // Any dialog EXCEPT this overlay. The overlay is itself a dialog now, so
+      // a bare `[role="dialog"]` query matches itself and Escape would stop
+      // hanging up entirely.
+      if (document.querySelector('[role="dialog"]:not([data-call-overlay])')) return;
       onHangUp();
     };
     window.addEventListener('keydown', onKey);
@@ -401,7 +404,18 @@ export function CallOverlay({
     // fixes the whole class instead of patching each popover's z-index.
     //
     // Window chrome and toasts live at z-200 and stay above everything.
-    <div className="fixed inset-0 z-40 flex" style={{ backgroundColor: 'var(--bg-primary, #100E09)' }}>
+    // A dialog, and declared as one. It covers the whole window and takes
+    // every key, but without these a screen reader announced nothing when it
+    // opened and Tab kept walking the chat underneath it — the caller's focus
+    // was in a room they could no longer see.
+    <div
+      data-call-overlay=""
+      role="dialog"
+      aria-modal="true"
+      aria-label={t('call.title')}
+      className="fixed inset-0 z-40 flex"
+      style={{ backgroundColor: 'var(--bg-primary, #100E09)' }}
+    >
       {/* The frameless window still has to be movable while a call covers the
           screen. This strip spans the top and does nothing else. */}
       <div data-tauri-drag-region className="absolute inset-x-0 top-0 z-10 h-8" />
@@ -560,7 +574,18 @@ export function CallOverlay({
         )}
 
         <div className="relative flex max-w-xl flex-col items-center gap-2 text-center">
-          <p className="text-2xl font-light tracking-tight text-text-primary">{title}</p>
+          {/* The phase line is the whole state of the call: listening,
+              thinking, speaking, reconnecting. On screen it changes in place,
+              so a sighted caller always knows. Announced politely, a caller
+              who cannot see it knows too, and that is the person most likely
+              to be using their voice in the first place. */}
+          <p
+            aria-live="polite"
+            aria-atomic="true"
+            className="text-2xl font-light tracking-tight text-text-primary"
+          >
+            {title}
+          </p>
           {/* What it heard, or the invitation when it has heard nothing yet. */}
           <CallTranscript
             text={phase !== 'ready' ? heard : ''}
@@ -1417,13 +1442,11 @@ function VoicePicker({
   // not a mistranscribed sentence.
   const spokenLocale = useUI((s) => s.language);
   const [voices, setVoices] = useState<TtsVoice[] | null>(null);
-  const [failed, setFailed] = useState(false);
   const [typed, setTyped] = useState('');
 
   useEffect(() => {
     let current = true;
     setVoices(null);
-    setFailed(false);
     (load ? load() : tauri.voice.ttsVoices(engineId))
       .then((list) => {
         if (!current) return;
@@ -1438,7 +1461,16 @@ function VoicePicker({
           if (pick) setTtsVoice(engineId, pick.id);
         }
       })
-      .catch(() => { if (current) { setVoices([]); setFailed(true); } });
+      .catch(() => {
+        if (!current) return;
+        setVoices([]);
+        // The list is how a person picks a voice, and it is also how the app
+        // learns the vendor's default. With it gone, pin the default we were
+        // given rather than leaving the call with no voice at all: Fish, for
+        // one, then chooses a different voice per request and the assistant
+        // changes voice between sentences.
+        if (!chosen && defaultVoiceId) setTtsVoice(engineId, defaultVoiceId);
+      });
     return () => { current = false; };
     // `chosen` is read but deliberately not a dependency: this runs per engine, and
     // re-running it on every voice change would fight the user's own selection.
@@ -1454,21 +1486,30 @@ function VoicePicker({
     );
   }
 
-  // No list to choose from: let the id be typed rather than hiding the control.
+  // No list to choose from.
+  //
+  // This used to put an empty field on the call screen with "Couldn't list
+  // voices. Paste a voice id" in it. That is a developer's escape hatch
+  // wearing the product's clothes: the person is standing in front of a phone
+  // call, has no idea what a voice id is, and the one thing that could have
+  // told them is the list that just failed. Nobody is going to go hunting for
+  // a vendor's identifier to hear a sentence.
+  //
+  // So: say which voice is being used, or what is missing. Whichever it is,
+  // the call still works, and the id field lives on in Settings, where
+  // somebody with a cloned voice can go looking for it on purpose.
   if (voices.length === 0) {
+    const using = chosen || defaultVoiceId;
     return (
-      <div className="flex items-center gap-2">
-        <Input
-          value={typed}
-          onChange={(e) => setTyped(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter' && typed.trim()) setTtsVoice(engineId, typed.trim()); }}
-          placeholder={failed ? t('call.voicesFailed') : t('call.voiceIdPlaceholder')}
-          className="h-8 w-72 text-xs"
-        />
-        <Button size="sm" variant="outline" disabled={!typed.trim()} onClick={() => setTtsVoice(engineId, typed.trim())}>
-          {t('engine.save')}
-        </Button>
-      </div>
+      <span className="flex items-center gap-1.5 text-xs text-text-muted">
+        {using ? (
+          <>
+            {t('call.voicesUsingDefault')} <span className="text-text-secondary">{using}</span>
+          </>
+        ) : (
+          t('call.voicesNeedKey')
+        )}
+      </span>
     );
   }
 
