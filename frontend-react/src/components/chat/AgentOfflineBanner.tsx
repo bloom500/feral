@@ -58,7 +58,7 @@ export function AgentOfflineBanner() {
             would say it to someone standing next to you. */}
         <span>
           <ShimmeringText text="Cinderpaw is waking up" />
-          {' — it reads its memory first, which takes a moment on a large '}
+          {'. It reads its memory first, which takes a moment on a large '}
           {'workspace. Send in a few seconds and it will be listening.'}
         </span>
       </div>
