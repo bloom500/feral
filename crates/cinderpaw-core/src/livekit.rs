@@ -795,6 +795,33 @@ fn augmented_path(node: &Path) -> std::ffi::OsString {
 /// politeness: a webview that joins before the agent has published its track
 /// hears nothing for the first seconds, and the person says the first sentence
 /// twice.
+/// One line per event from the worker, with no word of what was said.
+///
+/// These events used to go straight to the window and nowhere else. That is
+/// fine while a call works and useless the moment one does not: "it stopped
+/// hearing me after two turns" arrived with nothing to look at, because the
+/// only record of a call lived in a webview console nobody had open.
+///
+/// Kind, the state when there is one, and a character COUNT. Never the
+/// transcript, never the answer, never a key. What a person said is not
+/// diagnostic data, and a log that quotes a phone call is a log nobody can
+/// safely send to us.
+fn log_event(v: &serde_json::Value) {
+    let kind = v.get("kind").and_then(|k| k.as_str()).unwrap_or("?");
+    let partial = v.get("partial").and_then(|p| p.as_bool()).unwrap_or(false);
+    let chars = v.get("text").and_then(|t| t.as_str()).map(|t| t.chars().count());
+    if kind == "state" {
+        // The state IS the diagnosis for a call that went quiet, so it is the
+        // one string here worth printing.
+        tracing::info!(
+            state = v.get("text").and_then(|t| t.as_str()).unwrap_or("?"),
+            "livekit event",
+        );
+    } else {
+        tracing::info!(kind, partial, chars, "livekit event");
+    }
+}
+
 pub async fn start(
     extra_bin_dirs: &[PathBuf],
     identity: &str,
@@ -1074,10 +1101,19 @@ pub async fn start(
             while let Ok(Some(line)) = lines.next_line().await {
                 match line.strip_prefix("CINDERPAW_EVENT ") {
                     Some(json) => match serde_json::from_str::<serde_json::Value>(json) {
-                        Ok(v) => on_event(v),
+                        Ok(v) => {
+                            log_event(&v);
+                            on_event(v);
+                        }
                         Err(e) => tracing::warn!("livekit: unreadable agent event ({e}): {json}"),
                     },
-                    None => tracing::debug!("livekit agent: {line}"),
+                    // INFO, not DEBUG. Everything the worker prints that is not
+                    // an event is the LiveKit SDK explaining itself, which is
+                    // the only account anyone has of a call that dropped. At
+                    // debug level it was written nowhere by default, so two
+                    // calls ended in "connection lost, reconnecting" with not
+                    // one line on disk about the transport.
+                    None => tracing::info!("livekit agent: {line}"),
                 }
             }
         });
@@ -1288,6 +1324,81 @@ mod tests {
         assert!(
             agent.contains("CINDERPAW_LIVE_LANGUAGE"),
             "the worker cannot know the language it should speak in",
+        );
+        // A fixed cadence is right for thirty seconds and wrong for three
+        // minutes: at twelve seconds flat, a long job cycles the same four
+        // lines through the caller four times over and stops sounding like
+        // someone working.
+        assert!(
+            agent.contains("FILLER_BACKOFF") && agent.contains("MAX_FILLER_MS"),
+            "the filler cadence has to back off on a long tool call",
+        );
+        assert!(
+            !agent.contains("setInterval("),
+            "a fixed interval cannot back off",
+        );
+        // The half this test used to miss entirely.
+        //
+        // It asserted that `session.say(` appears in the file, which it always
+        // did — and the call threw on every invocation, because the SDK
+        // refuses to synthesise text for a session with no TTS and the
+        // realtime session was built without one. Three failures in one real
+        // call, a minute of silence, and a green test over all of it. Asserting
+        // the session is CONSTRUCTED with a tts is the thing that would have
+        // caught it.
+        assert!(
+            agent.contains("new voice.AgentSession({ llm: await build(), tts: new LocalTTS(null) })"),
+            "the realtime session needs a TTS or `say` throws and the filler never speaks",
+        );
+        // And on Gemini the filler must NOT speak, because the model does.
+        //
+        // `toolBehavior: NON_BLOCKING` is what keeps the floor and the
+        // microphone open while a tool runs — without it the plugin drops
+        // every incoming audio frame (`shouldBlockRealtimeInputForPendingTools`)
+        // and the caller is ignored mid-sentence. With it, the model fills the
+        // gap in its own voice, and a second voice from the local engine would
+        // be two people talking at one person.
+        assert!(
+            agent.contains("toolBehavior: 'NON_BLOCKING'"),
+            "a blocking tool call mutes the model AND drops the caller's audio",
+        );
+        assert!(
+            agent.contains("SPEAKS_FOR_ITSELF ? () => {} : keepLineWarm(session)"),
+            "the local filler has to stand down when the model can speak for itself",
+        );
+        // Turn detection is configured, not inherited. The vendor's default
+        // ends a turn eagerly: on a real call it closed one in the middle of a
+        // long question, at 46 characters, and answered nothing — the caller
+        // paused to let it think and heard it give up.
+        assert!(
+            agent.contains("realtimeInputConfig: { automaticActivityDetection: endpointing() }"),
+            "without this the vendor picks when the caller has stopped talking",
+        );
+    }
+
+    /// The worker must hang up on a slow tool AFTER Rust has had its say.
+    ///
+    /// Rust answers a tool that overruns `VOICE_TOOL_DEADLINE` with a sentence
+    /// the model can speak: still working, tell them, ask again shortly. The
+    /// worker's abort was set below that budget, so the request was cancelled
+    /// before the answer was due, every time — the holding reply had never
+    /// been sent in a whole log of real calls. The model got a failure while
+    /// the search was still running, and told the caller it had searched.
+    #[test]
+    fn the_worker_waits_longer_than_the_server_takes() {
+        let agent = include_str!("livekit_agent.mjs");
+        let abort_ms: u64 = agent
+            .split("AbortSignal.timeout(")
+            .nth(1)
+            .and_then(|rest| rest.split(')').next())
+            .and_then(|n| n.trim().parse().ok())
+            .expect("the worker aborts a tool request on a timeout");
+        // Read from the constant itself, not typed again here. Two copies of
+        // this number drifting apart is the exact defect under test.
+        let server_deadline_ms = crate::api::VOICE_TOOL_DEADLINE.as_millis() as u64;
+        assert!(
+            abort_ms > server_deadline_ms,
+            "the worker aborts at {abort_ms}ms, before the server's {server_deadline_ms}ms answer",
         );
     }
 

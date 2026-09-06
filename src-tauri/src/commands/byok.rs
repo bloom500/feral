@@ -64,7 +64,17 @@ pub(crate) fn save_byok_provider(
     // empty key here means "leave the stored one alone" — `save_provider`
     // already skips the keychain write in that case.
     let api_key = api_key.trim().to_string();
-    if enabled && api_key.is_empty() && byok::byok_get(&provider_id).is_none() {
+    // ...unless the provider has no key to give. This table also stores the
+    // chosen VOICE for a speech engine, and Piper's voice is a local file:
+    // picking `ro_RO-mihai-medium` and pressing Save arrived here as
+    // `enabled: true, api_key: ""` and was answered with "cannot be enabled
+    // without an API key" — about an engine that runs on the machine and has
+    // never had one. The rule is about credentials, so it asks whether this
+    // provider has any.
+    let keyless_engine = cinderpaw_core::tts::catalog()
+        .iter()
+        .any(|e| e.id == provider_id && !e.needs_key);
+    if enabled && !keyless_engine && api_key.is_empty() && byok::byok_get(&provider_id).is_none() {
         return Err(format!(
             "{provider_id} cannot be enabled without an API key — paste the key, or leave the provider off"
         ));
@@ -97,4 +107,32 @@ pub(crate) async fn test_byok_provider(provider_id: String, api_key: String, bas
     // providers get a GET /v1/models probe, Anthropic skips straight to a
     // chat-completion probe). See `crates/cinderpaw-core/src/byok.rs`.
     Ok(byok::test_provider(&provider_id, &api_key, base_url.as_deref()).await)
+}
+
+#[cfg(test)]
+mod tests {
+    /// A local speech engine has no key, and must still be able to store the
+    /// voice it was given.
+    ///
+    /// This table holds two different things: credentials for cloud providers,
+    /// and the chosen voice for a speech engine. The guard above is about the
+    /// first, and it used to fire on the second — choosing a Piper voice and
+    /// pressing Save answered "cannot be enabled without an API key" for an
+    /// engine that runs on the machine. The catalog is what tells them apart,
+    /// so this checks the catalog still answers.
+    #[test]
+    fn the_local_speech_engines_are_keyless_in_the_catalog() {
+        let catalog = cinderpaw_core::tts::catalog();
+        let piper = catalog
+            .iter()
+            .find(|e| e.id == "piper")
+            .expect("piper is in the catalog");
+        assert!(!piper.needs_key, "piper runs locally and has no key to ask for");
+        assert!(piper.is_local, "a keyless engine that is not local would need a second look");
+        // And the guard must still protect the providers it was written for.
+        assert!(
+            catalog.iter().any(|e| e.needs_key),
+            "if nothing needs a key the exemption below is not narrowing anything",
+        );
+    }
 }

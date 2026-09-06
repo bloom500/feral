@@ -50,6 +50,9 @@ import {
   TrackSource,
 } from '@livekit/rtc-node';
 import { fileURLToPath } from 'node:url';
+import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 
 const RATE = 48000;
 const CHANNELS = 1;
@@ -164,7 +167,14 @@ class LocalTTSStream extends tts.ChunkedStream {
     const res = await fetch(`${API_URL}/runtime/voice/speak`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${API_TOKEN}` },
-      body: JSON.stringify({ provider: TTS_ENGINE, voice: VOICE || null, text: this.inputText }),
+      body: JSON.stringify({
+        provider: TTS_ENGINE,
+        // `this.tts.voiceName`, not `VOICE`. In a realtime call VOICE names the
+        // VENDOR's voice ("Kore", "Charon"), which means nothing to piper and
+        // would be sent as a voice id that does not exist.
+        voice: this.tts?.voiceName ?? null,
+        text: this.inputText,
+      }),
       signal: this.abortSignal,
     });
     if (!res.ok) throw new Error(`Local speech failed: ${await res.text()}`);
@@ -186,11 +196,19 @@ class LocalTTSStream extends tts.ChunkedStream {
 
 class LocalTTS extends tts.TTS {
   label = 'cinderpaw.LocalTTS';
-  constructor() {
+  /**
+   * `voiceName` is the local engine's voice, or null to let it choose.
+   *
+   * The pipeline passes the one the person picked. The realtime path passes
+   * null, because there the picked voice belongs to the vendor and this engine
+   * has never heard of it.
+   */
+  constructor(voiceName = VOICE || null) {
     // The rate declared here is what the session resamples TO; the frames
     // themselves carry the engine's real rate, which is why the header above
     // is read rather than assumed.
     super(24000, 1, { streaming: false });
+    this.voiceName = voiceName;
   }
   get provider() { return 'cinderpaw'; }
   get model() { return TTS_ENGINE; }
@@ -351,6 +369,61 @@ const PLUGIN = {
   pipeline: () => import('@livekit/agents-plugin-silero'),
 };
 
+/**
+ * When the vendor decides you have stopped talking.
+ *
+ * This is the single biggest lever on how a call FEELS, and it is a trade,
+ * not a win. Longer silence means you can pause mid-thought without being
+ * cut off, and every answer arrives that much later. Shorter is snappier and
+ * finishes your sentences for you.
+ *
+ * Gemini Live defaults to END_SENSITIVITY_HIGH, which ends a turn eagerly. On
+ * a real call that closed a turn in the middle of a long question, at 46
+ * characters, and then answered nothing at all: the caller paused to let it
+ * think, and it had already decided the fragment needed no reply. LOW is the
+ * fix for that shape. The silence hold is kept short so that a genuine stop
+ * is still answered promptly rather than traded away for the same patience.
+ *
+ * `prefixPaddingMs` is how much speech it takes to count as started. Low
+ * enough that "da" registers, high enough that a keyboard does not.
+ */
+const ENDPOINTING_DEFAULTS = {
+  endOfSpeechSensitivity: 'END_SENSITIVITY_LOW',
+  silenceDurationMs: 700,
+  prefixPaddingMs: 300,
+};
+
+/**
+ * Tuning overrides, read once per call from `~/.cinderpaw/voice-tuning.json`.
+ *
+ * The defaults above ARE the product: nobody should have to create this file,
+ * and a fresh install never has one. It exists because finding the right
+ * numbers means hearing them, and every change to the constants above costs a
+ * full rebuild of the app. With this, a hang up and a redial is the whole
+ * iteration.
+ *
+ * Unknown keys are ignored rather than merged, so a typo in a hand-edited
+ * file cannot send the vendor a field it will reject and kill the call.
+ */
+function endpointing() {
+  const home = (process.env.CINDERPAW_HOME || '').trim() || join(homedir(), '.cinderpaw');
+  let overrides = {};
+  try {
+    const raw = JSON.parse(readFileSync(join(home, 'voice-tuning.json'), 'utf8'));
+    for (const key of Object.keys(ENDPOINTING_DEFAULTS)) {
+      if (raw[key] !== undefined && raw[key] !== null) overrides[key] = raw[key];
+    }
+  } catch {
+    // No file, or an unreadable one. Both mean "use the defaults", which is
+    // what almost every machine will do forever.
+  }
+  const merged = { ...ENDPOINTING_DEFAULTS, ...overrides };
+  if (Object.keys(overrides).length > 0) {
+    console.log(`voice tuning: ${JSON.stringify(merged)} (from voice-tuning.json)`);
+  }
+  return merged;
+}
+
 const REALTIME = {
   google: async () => {
     const google = await PLUGIN.google();
@@ -372,6 +445,25 @@ const REALTIME = {
       // stupidity. Also what a call needs to leave behind a readable trace.
       inputAudioTranscription: {},
       outputAudioTranscription: {},
+      // The single most important line in this file for how a call FEELS.
+      //
+      // Left on the default, the plugin treats a tool call as blocking, and
+      // blocking means two things at once, both of them bad. The model cannot
+      // speak until the tool returns — that is the silence. And
+      // `pushAudio` drops every microphone frame while a call is pending
+      // (`realtime_api.js`, `shouldBlockRealtimeInputForPendingTools`) — that
+      // is the app going deaf mid-conversation, which is not a bug report we
+      // guessed at: a real call spent 65 seconds in `ask_cinder` with every
+      // word the caller said thrown away, and the screen still saying
+      // "Listening".
+      //
+      // NON_BLOCKING keeps the floor and the microphone open. Scheduling is
+      // left at its default of WHEN_IDLE so the answer lands in a gap rather
+      // than cutting the model off mid-sentence.
+      toolBehavior: 'NON_BLOCKING',
+      // See `endpointing()`. Left unset the vendor ends turns eagerly, which
+      // is what made a pause mid-question read as "it stopped answering".
+      realtimeInputConfig: { automaticActivityDetection: endpointing() },
       instructions: INSTRUCTIONS,
     });
   },
@@ -425,6 +517,18 @@ const API_TOKEN = process.env.CINDERPAW_API_TOKEN || '';
 const SESSION_ID = `voice-${process.pid}`;
 
 /**
+ * Whether the vendor's own model can talk while a tool runs.
+ *
+ * True for Gemini, where `ask_cinder` is declared NON_BLOCKING and the session
+ * keeps both the floor and the microphone. Everywhere else the tool call runs
+ * inside the turn: the model is blocked, and the only thing that can fill the
+ * gap is this file, with the local engine, in a different voice. That trade is
+ * worth making against silence, and not worth making against a model that was
+ * about to speak.
+ */
+const SPEAKS_FOR_ITSELF = PROVIDER === 'google';
+
+/**
  * The language the app is being used in, so anything this file says out loud is
  * said in it. Two letters, or empty when nothing was chosen.
  */
@@ -434,12 +538,17 @@ const LANGUAGE = (process.env.CINDERPAW_LIVE_LANGUAGE || '').trim().toLowerCase(
  * What the agent says while a tool call is running.
  *
  * Spoken by THIS FILE, not by the model, and that is the whole point. The brief
- * already tells the model at length to keep the line warm, and on Gemini's
- * native-audio model it can: `ask_cinder` is declared NON_BLOCKING and the
- * session stays free to talk. Every other vendor runs the tool call inside the
- * turn, so the model is not choosing to stay quiet, it is unable to speak.
- * Thirty seconds of that is indistinguishable from a dropped call, and no
- * amount of prompt fixes something the model cannot do.
+ * already tells the model at length to keep the line warm, and it cannot: every
+ * vendor here runs the tool call inside the turn, so the model is not choosing
+ * to stay quiet, it is unable to speak. Thirty seconds of that is
+ * indistinguishable from a dropped call, and no amount of prompt fixes
+ * something the model cannot do.
+ *
+ * This used to claim Gemini was exempt because `ask_cinder` is declared
+ * NON_BLOCKING. That declaration lives in `live/bridge.rs`, which is the OTHER
+ * voice engine, the retired one. Nothing in this file ever sent it, so the
+ * exemption was never real, and the sentence stating it outlived the code it
+ * described.
  *
  * Short, plain, and varied, because the same sentence twice in twenty seconds
  * sounds more broken than silence. Nothing here claims a result: the model says
@@ -470,6 +579,18 @@ const FILLER = {
 /** How long a tool call may run before the line needs warming, and how often. */
 const FIRST_FILLER_MS = 1200;
 const NEXT_FILLER_MS = 12_000;
+/**
+ * Each wait is longer than the last, up to a ceiling.
+ *
+ * A fixed 12s cadence is right for the first half minute and wrong for a job
+ * that runs three minutes: it produces fifteen interruptions and cycles four
+ * lines through the caller four times over, which stops sounding like someone
+ * working and starts sounding like a loop. Backing off says the same thing a
+ * person says on a long call, less and less often, and the ceiling keeps the
+ * gap short enough that the line never feels dropped.
+ */
+const FILLER_BACKOFF = 1.4;
+const MAX_FILLER_MS = 40_000;
 
 /**
  * Keep the line warm for as long as `stop()` has not been called.
@@ -503,13 +624,20 @@ function keepLineWarm(session) {
   const first = setTimeout(() => {
     speak(lines.start[Math.floor(Math.random() * lines.start.length)]);
   }, FIRST_FILLER_MS);
-  const later = setInterval(() => {
-    speak(lines.waiting[n++ % lines.waiting.length]);
-  }, NEXT_FILLER_MS);
+  let wait = NEXT_FILLER_MS;
+  let later = null;
+  const again = () => {
+    later = setTimeout(() => {
+      speak(lines.waiting[n++ % lines.waiting.length]);
+      wait = Math.min(MAX_FILLER_MS, Math.round(wait * FILLER_BACKOFF));
+      if (!stopped) again();
+    }, wait);
+  };
+  again();
   return () => {
     stopped = true;
     clearTimeout(first);
-    clearInterval(later);
+    if (later !== null) clearTimeout(later);
   };
 }
 let nextCallId = 0;
@@ -521,11 +649,19 @@ async function askRust(name, args) {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${API_TOKEN}` },
       body: JSON.stringify({ id: String(++nextCallId), name, args }),
-      // A backstop above Rust's own twenty-second budget, not a second policy.
-      // A realtime session BLOCKS on a tool call, so anything that can hang
-      // here — a dead API server, a socket that never answers — is a call that
-      // goes silent mid-sentence with no way back.
-      signal: AbortSignal.timeout(30000),
+      // A backstop ABOVE Rust's own budget, not a second policy — and for a
+      // while it was neither. Rust answers a slow tool at
+      // `VOICE_TOOL_DEADLINE` (45s) with a sentence the model can say out
+      // loud: "still working on that one, tell the user you are still on it."
+      // This abort was 30s, left over from when that budget was 20s, so the
+      // client hung up fifteen seconds BEFORE the honest answer was due. In a
+      // whole log of real calls that holding reply had never once been sent.
+      //
+      // What the model got instead was this file's catch branch, i.e. a
+      // failure, while the search went on running in the background — and then
+      // it talked as though it had searched. The one that has to be bigger is
+      // this one.
+      signal: AbortSignal.timeout(60000),
     });
     if (!res.ok) return { ok: false, output: `Cinderpaw refused the request (${res.status})` };
     const { response } = await res.json();
@@ -572,7 +708,14 @@ function toolsFromDeclarations(session) {
         emit({ kind: 'toolCall', text: String(args?.request ?? '').trim() });
         // The panel says what is running; this says it out loud, which is the
         // half a person on a phone call actually receives.
-        const done = keepLineWarm(session);
+        //
+        // Not on Gemini. There the tool is NON_BLOCKING, so the model keeps
+        // the floor and fills the gap ITSELF, in the voice the caller has been
+        // listening to all along. Speaking over that with the local engine
+        // would put a second, different voice into the same call — which this
+        // product has already shipped once, by accident, and it reads as two
+        // people talking at you rather than as one assistant working.
+        const done = SPEAKS_FOR_ITSELF ? () => {} : keepLineWarm(session);
         try {
           const out = await askRust(decl.name, args);
           emit({ kind: 'toolResult', text: out?.ok === false ? String(out.output ?? 'failed') : '' });
@@ -645,7 +788,24 @@ async function assistant(ctx, makeSession) {
     );
     return echo(ctx);
   }
-  const session = makeSession ? await makeSession(ctx) : new voice.AgentSession({ llm: await build() });
+  // `tts` on a REALTIME session, which looks wrong and is not.
+  //
+  // The vendor's own voice still answers: the SDK takes the realtime audio
+  // path whenever the llm is a RealtimeModel with audio output
+  // (`agent_activity`, the two `capabilities.audioOutput` branches). What the
+  // TTS is for is `session.say()`, which is how this file speaks over a tool
+  // call — and which threw on every single attempt without one:
+  //
+  //   filler could not be spoken (trying to generate speech from text without
+  //   a TTS model); the call runs silent while tools work
+  //
+  // Three times in one real call, while `ask_cinder` ran for 14s, 19s, and
+  // once for over a minute. The guarantee that a call never goes quiet while a
+  // tool works was written, tested, and not true on the only engine anybody
+  // uses.
+  const session = makeSession
+    ? await makeSession(ctx)
+    : new voice.AgentSession({ llm: await build(), tts: new LocalTTS(null) });
 
   // One line per event, on stdout, for Rust to forward to the window. A prefix
   // rather than a side channel because the pipe already exists and a second one
