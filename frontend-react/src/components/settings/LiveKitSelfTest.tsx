@@ -198,7 +198,7 @@ export function LiveKitSelfTest() {
       {phase !== 'error' && mode !== 'assistant' && (
         <p className="text-xs text-text-muted flex items-center gap-1.5">
           <Headphones className="h-3 w-3 shrink-0" />
-          Without a key this echoes you — use headphones, or speakers will squeal.
+          Without a key this echoes you, so use headphones or the speakers will squeal.
         </p>
       )}
 
@@ -211,7 +211,7 @@ export function LiveKitSelfTest() {
       {phase === 'live' && (
         <p className="text-xs text-text-primary">
           {mode === 'assistant'
-            ? 'Connected. Say something — your assistant is listening.'
+            ? 'Connected. Say something, your assistant is listening.'
             : 'Connected, with no key: this is an echo, not an assistant. Say something and you should hear it back.'}
         </p>
       )}
